@@ -1,0 +1,25 @@
+# Dependencies & Virtualenvs
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Build & Framework Artifacts
+.next/
+dist/
+build/
+.turbo/
+coverage/
+
+# Environment & Secrets (NEVER COMMIT)
+.env
+.env.local
+.env.*.local
+
+# Local Storage & OS
+*.log
+.DS_Store
+minio_data/
+postgres_data/
