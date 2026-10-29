@@ -1,1 +1,72 @@
-
+openapi: 3.1.0
+info:
+  title: ChronoRig Autonomous Video-to-Physics API
+  version: 1.0.0
+  description: Meta Global AI Developer Hackathon API Contract
+servers:
+  - url: http://localhost:8000
+    description: Local Development
+paths:
+  /api/v1/uploads/presign:
+    post:
+      summary: Generate presigned S3/R2 upload URL for raw MP4 video
+      operationId: createPresignedUpload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filename, contentType, fileSizeBytes]
+              properties:
+                filename: { type: string }
+                contentType: { type: string, enum: ["video/mp4", "video/webm"] }
+                fileSizeBytes: { type: integer, maximum: 52428800 }
+      responses:
+        "200":
+          description: Presigned upload URL and S3 object key
+  /api/v1/jobs:
+    post:
+      summary: Enqueue a new ChronoRig video-to-physics pipeline job
+      operationId: createRigJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRigJobRequest"
+      responses:
+        "202":
+          description: Job accepted for asynchronous processing
+        "422":
+          description: Validation error (RFC 7807 Problem Details)
+        "429":
+          description: Rate limit exceeded
+  /api/v1/jobs/{jobId}:
+    get:
+      summary: Retrieve full rig state, kinematic graph, and IoU verification history
+      operationId: getRigJob
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Complete RigJob state
+        "404":
+          description: Job not found
+components:
+  schemas:
+    CreateRigJobRequest:
+      type: object
+      required: [videoS3Key, partPrompts]
+      properties:
+        videoS3Key: { type: string, minLength: 5, maxLength: 512 }
+        partPrompts:
+          type: array
+          minItems: 2
+          maxItems: 12
+          items: { type: string }
+        targetIouThreshold: { type: number, default: 0.85 }
+        maxSelfDebugIterations: { type: integer, default: 3 }
