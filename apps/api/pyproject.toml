@@ -2,7 +2,7 @@
 name = "chronorig-api"
 version = "1.0.0"
 description = "ChronoRig Autonomous Video-to-Physics Control Plane & Verifiable Agent Engine"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "fastapi>=0.115.4",
     "uvicorn[standard]>=0.32.0",
@@ -31,3 +31,4 @@ dev = [
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

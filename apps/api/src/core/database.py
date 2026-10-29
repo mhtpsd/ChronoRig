@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,

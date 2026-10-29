@@ -1,0 +1,23 @@
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "ASYNC", # flake8-async (prevents blocking calls in async FastAPI routes)
+    "S",   # flake8-bandit security checks
+]
+ignore = ["S101", "E501", "B008"] # Allow assert in pytest suites
+
+[lint.per-file-ignores]
+"tests/**/*.py" = ["S105", "S106"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
