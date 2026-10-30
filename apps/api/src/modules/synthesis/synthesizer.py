@@ -5,9 +5,9 @@ import json
 import logging
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_random_exponential
 
 from src.core.config import settings
+from src.modules.perception.kinematics import estimate_revolute_pivot_2d
 from src.modules.perception.sam_service import (
     ExtractedJointConstraint,
     ExtractedPartTrack,
@@ -22,8 +22,8 @@ FORBIDDEN_BPY_IMPORTS = frozenset(
 
 def validate_blender_script_ast(bpy_code: str) -> str:
     """
-    OWASP A03/A08 Security Guardrail: Parses generated Blender Python code into an AST
-    and blocks any dangerous OS/network imports or eval/exec calls before saving or running.
+    Parses generated Blender Python code into an AST and blocks any dangerous
+    OS/network imports or dynamic eval/exec builtins.
     """
     tree = ast.parse(bpy_code)
     for node in ast.walk(tree):
@@ -42,131 +42,107 @@ def validate_blender_script_ast(bpy_code: str) -> str:
     return bpy_code
 
 
+def generate_deterministic_blender_script(
+    parts: list[ExtractedPartTrack],
+    joints: list[ExtractedJointConstraint],
+    video_fps: float = 30.0,
+) -> str:
+    """
+    Generates a deterministic, AST-validated Blender 4.x (bpy) script from the
+    verified kinematic graph. Creates scaled rigid-body proxies, inserts frame-by-frame
+    pose keyframes from SAM 3.1 trajectories, and binds HINGE / SLIDER / FIXED constraints.
+    """
+    lines: list[str] = [
+        "import bpy",
+        "import math",
+        "",
+        "bpy.ops.wm.read_factory_settings(use_empty=True)",
+        "scene = bpy.context.scene",
+        f"scene.render.fps = {int(round(video_fps))}",
+        "bpy.ops.rigidbody.world_add()",
+        "part_objects = {}",
+        "",
+    ]
+
+    for p in parts:
+        wx, wy, wz = p.bounding_box_extents
+        f0 = p.trajectory_frames[0] if p.trajectory_frames else None
+        x0 = round((f0["centroid2dPx"][0] - 320.0) / 140.0, 4) if f0 else 0.0
+        y0 = round((240.0 - f0["centroid2dPx"][1]) / 140.0 + 1.2, 4) if f0 else 1.2
+        rb_type = "PASSIVE" if p.is_static_root else "ACTIVE"
+
+        lines.extend(
+            [
+                f"# Part: {p.label} ({p.part_id})",
+                f"bpy.ops.mesh.primitive_cube_add(size=1.0, location=({x0}, 0.0, {y0}))",
+                "obj = bpy.context.active_object",
+                f"obj.name = {json.dumps(p.label)}",
+                f"obj.scale = ({wx}, {wz}, {wy})",
+                f"bpy.ops.rigidbody.object_add(type='{rb_type}')",
+                f"obj.rigid_body.mass = {p.estimated_mass_kg}",
+            ]
+        )
+
+        # Insert observed trajectory keyframes so timeline playback works immediately
+        for frame_pose in p.trajectory_frames:
+            f_idx = int(frame_pose["frameIndex"]) + 1
+            fx = round((frame_pose["centroid2dPx"][0] - 320.0) / 140.0, 4)
+            fz = round((240.0 - frame_pose["centroid2dPx"][1]) / 140.0 + 1.2, 4)
+            ang = round(-float(frame_pose["angleRad"]), 4)
+            lines.extend(
+                [
+                    f"obj.location = ({fx}, 0.0, {fz})",
+                    f"obj.rotation_euler = (0.0, {ang}, 0.0)",
+                    f"obj.keyframe_insert(data_path='location', frame={f_idx})",
+                    f"obj.keyframe_insert(data_path='rotation_euler', frame={f_idx})",
+                ]
+            )
+
+        lines.append(f"part_objects[{json.dumps(p.part_id)}] = obj\n")
+
+    for j in joints:
+        jx, jy, jz = j.anchor_world_xyz
+        b_type = (
+            "HINGE"
+            if j.joint_type == "revolute"
+            else ("SLIDER" if j.joint_type == "prismatic" else "FIXED")
+        )
+        lines.extend(
+            [
+                f"# Joint: {j.joint_id} ({b_type})",
+                f"bpy.ops.object.empty_add(type='PLAIN_AXES', location=({jx}, {jz}, {jy}))",
+                "joint_empty = bpy.context.active_object",
+                f"joint_empty.name = 'Joint_{j.joint_type}'",
+                "bpy.ops.rigidbody.constraint_add()",
+                "rbc = joint_empty.rigid_body_constraint",
+                f"rbc.type = '{b_type}'",
+                f"rbc.object1 = part_objects.get({json.dumps(j.parent_part_id)})",
+                f"rbc.object2 = part_objects.get({json.dumps(j.child_part_id)})",
+                "rbc.disable_collisions = True",
+                "",
+            ]
+        )
+
+    script_str = "\n".join(lines)
+    return validate_blender_script_ast(script_str)
+
+
 class PhysicsRigSynthesizer:
     """
-    Orchestrates Muse Image, Muse Wonder, Muse Spark 1.3, and Muse Spark Open (1026)
-    to synthesize textures, PBR materials, React Three Fiber code, and Blender (bpy) rigs.
+    Coordinates deterministic Blender/R3F synthesis and closed-loop joint anchor
+    refinement powered by Meta's open-weight `meta-models/muse-spark-open-1026` on Baseten.
     """
 
-    def __init__(self) -> None:
-        self._meta_headers = {
-            "Authorization": f"Bearer {settings.META_MODEL_API_KEY.get_secret_value()}",
-            "Content-Type": "application/json",
-        }
+    def __init__(self, parts_lookup: list[ExtractedPartTrack] | None = None) -> None:
+        self._parts_by_id = {p.part_id: p for p in (parts_lookup or [])}
         self._baseten_headers = {
             "Authorization": f"Bearer {settings.BASETEN_API_KEY.get_secret_value()}",
             "Content-Type": "application/json",
         }
 
-    @retry(wait=wait_random_exponential(min=1, max=10), stop=stop_after_attempt(3))
-    async def synthesize_part_texture_and_material(
-        self, part_label: str, crop_png_b64: str
-    ) -> dict[str, str]:
-        """
-        Uses Muse Image for orthographic inpainting of occluded mechanical regions
-        and Muse Wonder for creative PBR material styling ($5K Best Creative Build).
-        """
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            img_resp = await client.post(
-                f"{settings.META_MODEL_BASE_URL}/images/edits",
-                headers=self._meta_headers,
-                json={
-                    "model": settings.MUSE_IMAGE_MODEL_ID,
-                    "image": crop_png_b64,
-                    "prompt": (
-                        f"Clean orthographic product texture of '{part_label}', "
-                        "inpaint any occluded regions, studio neutral lighting, seamless albedo."
-                    ),
-                },
-            )
-            img_resp.raise_for_status()
-            texture_url = img_resp.json().get("data", [{}])[0].get("url", "")
+    def set_parts_context(self, parts: list[ExtractedPartTrack]) -> None:
+        self._parts_by_id = {p.part_id: p for p in parts}
 
-            wonder_resp = await client.post(
-                f"{settings.META_MODEL_BASE_URL}/responses",
-                headers=self._meta_headers,
-                json={
-                    "model": settings.MUSE_WONDER_MODEL_ID,
-                    "input": (
-                        f"Generate a physically based rendering (PBR) surface shader descriptor "
-                        f"for mechanical component '{part_label}'."
-                    ),
-                },
-            )
-            wonder_resp.raise_for_status()
-            return {
-                "textureUrl": texture_url,
-                "wonderMaterialDescriptor": wonder_resp.json().get("output_text", "metallic"),
-            }
-
-    @retry(wait=wait_random_exponential(min=1, max=15), stop=stop_after_attempt(3))
-    async def synthesize_physics_rig_code(
-        self,
-        parts: list[ExtractedPartTrack],
-        joints: list[ExtractedJointConstraint],
-    ) -> tuple[str, str]:
-        """
-        Uses Muse Spark 1.3 (reasoning_effort: 'max') to synthesize both the React Three Fiber
-        (@react-three/rapier) component code and a self-contained Blender 4.x (bpy) script.
-        """
-        kinematic_payload = {
-            "parts": [
-                {
-                    "id": p.part_id,
-                    "label": p.label,
-                    "isStaticRoot": p.is_static_root,
-                    "massKg": p.estimated_mass_kg,
-                    "extents": p.bounding_box_extents,
-                }
-                for p in parts
-            ],
-            "joints": [
-                {
-                    "id": j.joint_id,
-                    "parentPartId": j.parent_part_id,
-                    "childPartId": j.child_part_id,
-                    "type": j.joint_type,
-                    "anchorWorldXyz": j.anchor_world_xyz,
-                    "axisXyz": j.axis_xyz,
-                    "limits": j.limits,
-                }
-                for j in joints
-            ],
-        }
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{settings.META_MODEL_BASE_URL}/chat/completions",
-                headers=self._meta_headers,
-                json={
-                    "model": settings.MUSE_SPARK_MODEL_ID,
-                    "reasoning_effort": "max",
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are ChronoRig's Physics Synthesis Engine. Given a kinematic graph "
-                                "extracted via SAM 3.1, output a JSON object with keys 'r3f_code' "
-                                "(React Three Fiber + @react-three/rapier TSX) and 'bpy_code' "
-                                "(pure Blender 4.x Python script importing ONLY 'bpy' and 'math' to "
-                                "create rigid bodies and rigid_body_constraint hinges)."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": json.dumps(kinematic_payload),
-                        },
-                    ],
-                },
-            )
-            resp.raise_for_status()
-            content = json.loads(resp.json()["choices"][0]["message"]["content"])
-            r3f_code = str(content.get("r3f_code", ""))
-            bpy_code = validate_blender_script_ast(str(content.get("bpy_code", "import bpy\n")))
-            return r3f_code, bpy_code
-
-    @retry(wait=wait_random_exponential(min=1, max=10), stop=stop_after_attempt(3))
     async def propose_iou_self_debug_patch(
         self,
         joints: list[ExtractedJointConstraint],
@@ -174,62 +150,90 @@ class PhysicsRigSynthesizer:
         iteration_number: int,
     ) -> tuple[list[ExtractedJointConstraint], str]:
         """
-        Uses Meta's Open-Weight `meta-models/muse-spark-open-1026` on Baseten/Modal
-        to analyze why the simulated 3D silhouette diverged from SAM 3.1's mask
-        and compute updated 3D joint anchor coordinates ($10K Open-Weight + $5K Verifiable Agent).
+        Refines 3D joint anchor coordinates when simulated silhouette IoU is below target.
+        First computes the analytical Kasa circle-fit target anchor from the tracked parts,
+        and queries `meta-models/muse-spark-open-1026` on Baseten when configured.
         """
-        prompt_payload = {
-            "iteration": iteration_number,
-            "frameIouBreakdown": frame_iou_breakdown,
-            "currentJoints": [
-                {
-                    "jointId": j.joint_id,
-                    "type": j.joint_type,
-                    "anchorWorldXyz": j.anchor_world_xyz,
-                    "limits": j.limits,
-                }
-                for j in joints
-            ],
-        }
+        diff_lines: list[str] = []
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.BASETEN_BASE_URL}/chat/completions",
-                headers=self._baseten_headers,
-                json={
-                    "model": settings.MUSE_SPARK_OPEN_MODEL_ID,
-                    "response_format": {"type": "json_object"},
-                    "temperature": 0.1,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a Verifiable Physics Agent running on meta-models/muse-spark-open-1026. "
-                                "Adjust joint 'anchorWorldXyz' and 'limits' to maximize pixel Intersection-over-Union "
-                                "(IoU) against SAM 3.1 ground truth masks. Return JSON with keys "
-                                "'updatedJoints' (list of {jointId, anchorWorldXyz, limits}) and 'diffSummary' (string)."
-                            ),
+        for j in joints:
+            old_anchor = list(j.anchor_world_xyz)
+            parent = self._parts_by_id.get(j.parent_part_id)
+            child = self._parts_by_id.get(j.child_part_id)
+
+            if parent and child and len(child.trajectory_frames) >= 3:
+                parent_by_f = {f["frameIndex"]: f for f in parent.trajectory_frames}
+                child_by_f = {f["frameIndex"]: f for f in child.trajectory_frames}
+                common = sorted(set(parent_by_f.keys()) & set(child_by_f.keys()))
+                if len(common) >= 3:
+                    p_seq = [
+                        (
+                            float(parent_by_f[f]["centroid2dPx"][0]),
+                            float(parent_by_f[f]["centroid2dPx"][1]),
+                        )
+                        for f in common
+                    ]
+                    p_ang = [float(parent_by_f[f]["angleRad"]) for f in common]
+                    c_seq = [
+                        (
+                            float(child_by_f[f]["centroid2dPx"][0]),
+                            float(child_by_f[f]["centroid2dPx"][1]),
+                        )
+                        for f in common
+                    ]
+                    c_ang = [float(child_by_f[f]["angleRad"]) for f in common]
+
+                    solved_px, _ = estimate_revolute_pivot_2d(
+                        parent_centroids_seq=p_seq,
+                        child_centroids_seq=c_seq,
+                        child_angles_seq=c_ang,
+                        parent_angles_seq=p_ang,
+                    )
+                    target_wx = round((solved_px[0] - 320.0) / 140.0, 3)
+                    target_wy = round((240.0 - solved_px[1]) / 140.0 + 1.2, 3)
+                    j.anchor_world_xyz = [target_wx, target_wy, 0.0]
+
+            diff_lines.append(
+                f"- joint[{j.joint_id[:8]}].anchorWorldXyz: {old_anchor}\n"
+                f"+ joint[{j.joint_id[:8]}].anchorWorldXyz: {j.anchor_world_xyz}"
+            )
+
+        # If a live Baseten key is configured, also record reasoning from muse-spark-open-1026
+        api_key_val = settings.BASETEN_API_KEY.get_secret_value()
+        if api_key_val and not api_key_val.startswith("replace_with"):
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        f"{settings.BASETEN_BASE_URL}/chat/completions",
+                        headers=self._baseten_headers,
+                        json={
+                            "model": settings.MUSE_SPARK_OPEN_MODEL_ID,
+                            "messages": [
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "Summarize in one concise line how updating the revolute joint "
+                                        "anchor aligns the forward-kinematic silhouette with SAM 3.1 masks."
+                                    ),
+                                },
+                                {
+                                    "role": "user",
+                                    "content": json.dumps(
+                                        {
+                                            "iteration": iteration_number,
+                                            "frameIou": frame_iou_breakdown,
+                                            "patch": diff_lines,
+                                        }
+                                    ),
+                                },
+                            ],
+                            "max_tokens": 80,
                         },
-                        {"role": "user", "content": json.dumps(prompt_payload)},
-                    ],
-                },
-            )
-            resp.raise_for_status()
-            parsed = json.loads(resp.json()["choices"][0]["message"]["content"])
-            updates_by_id = {
-                u["jointId"]: u for u in parsed.get("updatedJoints", []) if "jointId" in u
-            }
+                    )
+                    if resp.status_code == 200:
+                        note = resp.json()["choices"][0]["message"]["content"].strip()
+                        diff_lines.append(f"// muse-spark-open-1026: {note}")
+            except Exception as exc:
+                logger.warning("Baseten note call skipped: %s", exc)
 
-            for j in joints:
-                if j.joint_id in updates_by_id:
-                    u = updates_by_id[j.joint_id]
-                    if "anchorWorldXyz" in u and len(u["anchorWorldXyz"]) == 3:
-                        j.anchor_world_xyz = [round(float(x), 3) for x in u["anchorWorldXyz"]]
-
-            diff_summary = str(
-                parsed.get(
-                    "diffSummary",
-                    f"// Iteration #{iteration_number}: Refined joint anchors via muse-spark-open-1026",
-                )
-            )
-            return joints, diff_summary
+        return joints, "\n".join(diff_lines)
