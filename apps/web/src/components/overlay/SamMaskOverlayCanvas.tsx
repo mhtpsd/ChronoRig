@@ -71,14 +71,23 @@ export const SamMaskOverlayCanvas: React.FC = () => {
 
             const [bx, by, bw, bh] = pose.bboxPx;
             const [cx, cy] = pose.centroid2dPx;
+            const polygon = pose.contourPolygonPx;
 
-            // Translucent SAM 3.1 mask bounding region
+            // Draw actual SAM 3.1 / OpenCV polygon mask contour if present, fallback to bbox
             ctx.save();
             ctx.strokeStyle = color;
-            ctx.fillStyle = `${color}22`;
-            ctx.lineWidth = 2;
+            ctx.fillStyle = `${color}33`;
+            ctx.lineWidth = 2.2;
             ctx.beginPath();
-            ctx.roundRect(bx, by, bw, bh, 4);
+            if (polygon && polygon.length >= 3) {
+                polygon.forEach(([px, py], pIdx) => {
+                    if (pIdx === 0) ctx.moveTo(px, py);
+                    else ctx.lineTo(px, py);
+                });
+                ctx.closePath();
+            } else {
+                ctx.roundRect(bx, by, bw, bh, 4);
+            }
             ctx.fill();
             ctx.stroke();
 
@@ -179,8 +188,8 @@ export const SamMaskOverlayCanvas: React.FC = () => {
                         type="button"
                         onClick={togglePcaVectors}
                         className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-mono transition ${showPcaVectors
-                                ? "bg-teal-500/20 text-teal-300 border border-teal-500/40"
-                                : "bg-slate-800 text-slate-400"
+                            ? "bg-teal-500/20 text-teal-300 border border-teal-500/40"
+                            : "bg-slate-800 text-slate-400"
                             }`}
                     >
                         <Compass className="w-3.5 h-3.5" />
@@ -190,8 +199,8 @@ export const SamMaskOverlayCanvas: React.FC = () => {
                         type="button"
                         onClick={toggleJointAnchors}
                         className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-mono transition ${showJointAnchors
-                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                                : "bg-slate-800 text-slate-400"
+                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                            : "bg-slate-800 text-slate-400"
                             }`}
                     >
                         <Crosshair className="w-3.5 h-3.5" />
