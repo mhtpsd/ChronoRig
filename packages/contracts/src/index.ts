@@ -27,7 +27,9 @@ export const FramePoseSchema = z.object({
     timestampSec: z.number().nonnegative(),
     centroid2dPx: z.tuple([z.number(), z.number()]),
     angleRad: z.number(),
+    angleConfidence: z.enum(["high", "low_eccentricity"]).optional(),
     bboxPx: z.tuple([z.number(), z.number(), z.number(), z.number()]),
+    contourPolygonPx: z.array(z.tuple([z.number(), z.number()])).optional(),
 });
 
 export const RigidBodyPartSchema = z.object({
