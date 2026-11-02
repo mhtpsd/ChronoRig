@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -15,8 +14,9 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ROOT_ENV_PATH = Path(__file__).resolve().parents[4] / ".env"
-DEFAULT_ARTIFACTS_DIR = Path(tempfile.gettempdir()) / "chronorig_artifacts"
+ROOT_DIR = Path(__file__).resolve().parents[4]
+ROOT_ENV_PATH = ROOT_DIR / ".env"
+DEFAULT_ARTIFACTS_DIR = ROOT_DIR / ".data" / "chronorig_artifacts"
 
 
 class Settings(BaseSettings):
