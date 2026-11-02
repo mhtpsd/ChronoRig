@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator, model_validator
+from pydantic import (
+    Field,
+    PostgresDsn,
+    RedisDsn,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_ENV_PATH = Path(__file__).resolve().parents[4] / ".env"
+DEFAULT_ARTIFACTS_DIR = Path(tempfile.gettempdir()) / "chronorig_artifacts"
 
 
 class Settings(BaseSettings):
@@ -22,7 +31,12 @@ class Settings(BaseSettings):
     APP_NAME: str = "chronorig-api"
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
-    # Database & Redis (Safe local defaults for development & pytest)
+    # Public URLs & Durable Local/Shared State Path
+    PUBLIC_API_BASE_URL: str = "http://localhost:8000"
+    WEB_STUDIO_INTERNAL_URL: str = "http://localhost:3000"
+    ARTIFACTS_DIR: Path = DEFAULT_ARTIFACTS_DIR
+
+    # Database & Redis
     DATABASE_ASYNC_URL: PostgresDsn = PostgresDsn(
         "postgresql+asyncpg://chronorig:chronorig_dev_pwd@localhost:5432/chronorig"
     )
@@ -53,7 +67,6 @@ class Settings(BaseSettings):
     MUSE_GLIMMER_MODEL_ID: str = "meta-models/muse-glimmer-30b"
 
     # Security & Limits
-    WEB_STUDIO_INTERNAL_URL: str = "http://localhost:3000"
     JWT_SECRET_KEY: SecretStr = Field(
         default=SecretStr("chronorig_dev_jwt_secret_key_minimum_32_bytes_long"),
         min_length=32,
@@ -79,9 +92,26 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def enforce_production_secrets(self) -> Settings:
         if self.ENVIRONMENT == "production":
-            if self.META_MODEL_API_KEY.get_secret_value().startswith("replace_with"):
-                raise ValueError("Production requires a real META_MODEL_API_KEY")
+            checks = {
+                "META_MODEL_API_KEY": self.META_MODEL_API_KEY.get_secret_value(),
+                "BASETEN_API_KEY": self.BASETEN_API_KEY.get_secret_value(),
+                "JWT_SECRET_KEY": self.JWT_SECRET_KEY.get_secret_value(),
+                "S3_SECRET_ACCESS_KEY": self.S3_SECRET_ACCESS_KEY.get_secret_value(),
+                "DATABASE_ASYNC_URL": str(self.DATABASE_ASYNC_URL),
+            }
+            for name, val in checks.items():
+                if (
+                    val.startswith("replace_with")
+                    or "dev_pwd" in val
+                    or "dev_jwt" in val
+                    or val == "minioadmin"
+                ):
+                    raise ValueError(f"Production environment requires a secure non-default {name}")
         return self
+
+    def has_live_meta_key(self) -> bool:
+        val = self.META_MODEL_API_KEY.get_secret_value()
+        return bool(val and not val.startswith("replace_with"))
 
 
 @lru_cache

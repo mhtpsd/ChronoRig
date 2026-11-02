@@ -4,6 +4,7 @@ import importlib
 import json
 import logging
 import math
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,8 +58,8 @@ def generate_controlled_hinge_mp4(
 ) -> tuple[float, int]:
     """
     Generates a deterministic MP4 video of a 2-part planar hinge mechanism:
-    - Part 1 (Static Base): Blue horizontal anchor bar above the hinge at (320, 140), never occluded.
-    - Part 2 (Rotating Arm): Green elongated arm swinging 90 degrees around the hinge at (320, 140).
+    - Part 1 (Static Base): Blue horizontal anchor bar above the hinge at (320, 140).
+    - Part 2 (Rotating Arm): Green elongated arm swinging 90 degrees around (320, 140).
     """
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
@@ -67,7 +68,6 @@ def generate_controlled_hinge_mp4(
 
     for f_idx in range(frame_count):
         canvas = np.zeros((height, width, 3), dtype=np.uint8)
-        # Draw Static Root Base above hinge (y: 70..110) so rotating arm below never occludes it
         cv2.rectangle(
             canvas,
             (hinge_cx - 80, 70),
@@ -76,7 +76,6 @@ def generate_controlled_hinge_mp4(
             -1,
         )
 
-        # Swing arm smoothly across 90 degrees (from +0.75 rad to +2.35 rad) below the hinge
         theta = 0.75 + (1.60 * (f_idx / max(1, frame_count - 1)))
         arm_center_x = hinge_cx + arm_radius * math.cos(theta)
         arm_center_y = hinge_cy + arm_radius * math.sin(theta)
@@ -92,6 +91,24 @@ def generate_controlled_hinge_mp4(
 
     writer.release()
     return fps, frame_count
+
+
+def decode_uncompressed_rle(counts: list[int], width: int, height: int) -> np.ndarray:
+    """Decodes run-length encoded (RLE) pixel counts into a 2D binary mask."""
+    total_pixels = width * height
+    flat = np.zeros(total_pixels, dtype=np.uint8)
+    cursor = 0
+    val = 0
+    for count in counts:
+        c = max(0, int(count))
+        end = min(total_pixels, cursor + c)
+        if val == 1 and end > cursor:
+            flat[cursor:end] = 1
+        cursor = end
+        val = 1 - val
+        if cursor >= total_pixels:
+            break
+    return flat.reshape((height, width))
 
 
 class SamPerceptionService:
@@ -168,28 +185,67 @@ class SamPerceptionService:
     def _decode_sam_stream_to_masks(
         raw_sam_stream: str, frame_width: int, frame_height: int
     ) -> dict[int, np.ndarray]:
+        """
+        Decodes SAM 3.1 output_text stream using either `meta_sam_parser` (if installed)
+        or our built-in native JSON/RLE/polygon token decoder.
+        """
+        if not raw_sam_stream.strip():
+            return {}
+
+        # 1. Try external meta_sam_parser if present
         try:
             parser_mod = importlib.import_module("meta_sam_parser")
-        except ModuleNotFoundError as exc:
-            raise ChronoRigDomainError(
-                code="SAM_PARSER_NOT_INSTALLED",
-                message="meta_sam_parser is required to decode live SAM 3.1 streams.",
-                status_code=500,
-            ) from exc
+            masks_by_frame: dict[int, np.ndarray] = {}
+            for record in parser_mod.parse_sam_stream(raw_sam_stream):
+                f_idx = int(record.frame_index)
+                mask = parser_mod.decode_rle_to_mask(
+                    record.mask, width=frame_width, height=frame_height
+                )
+                masks_by_frame[f_idx] = (np.asarray(mask) > 0).astype(np.uint8)
+            if masks_by_frame:
+                return masks_by_frame
+        except ModuleNotFoundError:
+            pass
 
-        masks_by_frame: dict[int, np.ndarray] = {}
-        for record in parser_mod.parse_sam_stream(raw_sam_stream):
-            f_idx = int(record.frame_index)
-            mask = parser_mod.decode_rle_to_mask(
-                record.mask, width=frame_width, height=frame_height
+        # 2. Built-in native decoder for JSON frames / RLE counts / polygon token blocks
+        native_masks: dict[int, np.ndarray] = {}
+        try:
+            parsed = json.loads(raw_sam_stream)
+            frames_list = (
+                parsed.get("frames")
+                or parsed.get("output", {}).get("frames")
+                or (parsed if isinstance(parsed, list) else [])
             )
-            masks_by_frame[f_idx] = (np.asarray(mask) > 0).astype(np.uint8)
-        return masks_by_frame
+            for entry in frames_list:
+                f_idx = int(entry.get("frame_index", entry.get("frameIndex", 0)))
+                if "rle_counts" in entry:
+                    native_masks[f_idx] = decode_uncompressed_rle(
+                        entry["rle_counts"], frame_width, frame_height
+                    )
+                elif "polygon" in entry:
+                    canvas = np.zeros((frame_height, frame_width), dtype=np.uint8)
+                    pts = np.round(np.asarray(entry["polygon"], dtype=np.float64)).astype(np.int32)
+                    cv2.fillPoly(canvas, [pts.reshape((-1, 1, 2))], 1)
+                    native_masks[f_idx] = canvas
+        except json.JSONDecodeError:
+            # Parse inline token blocks: <frame=N><rle=c1,c2,...>
+            pattern = re.compile(r"<frame=(\d+)><rle=([0-9,]+)>")
+            for match in pattern.finditer(raw_sam_stream):
+                f_idx = int(match.group(1))
+                counts = [int(c) for c in match.group(2).split(",") if c]
+                native_masks[f_idx] = decode_uncompressed_rle(counts, frame_width, frame_height)
+
+        return native_masks
 
     @staticmethod
     def extract_local_cv_masks_from_mp4(
         mp4_path: Path, part_prompts: list[str]
     ) -> tuple[list[tuple[str, dict[int, np.ndarray]]], float, int, int, int]:
+        """
+        Extracts real per-frame binary segmentation masks from an MP4 video.
+        Supports both deterministic color-coded benchmark clips and arbitrary real-world
+        videos via Otsu thresholding + inter-frame optical motion separation.
+        """
         cap = cv2.VideoCapture(str(mp4_path))
         if not cap.isOpened():
             raise ChronoRigDomainError(
@@ -202,14 +258,16 @@ class SamPerceptionService:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
 
+        raw_frames_bgr: list[np.ndarray] = []
         part0_masks: dict[int, np.ndarray] = {}
         part1_masks: dict[int, np.ndarray] = {}
         frame_idx = 0
 
-        while True:
+        while len(raw_frames_bgr) < 450:
             ret, frame_bgr = cap.read()
             if not ret:
                 break
+            raw_frames_bgr.append(frame_bgr)
 
             b_ch, g_ch, r_ch = cv2.split(frame_bgr)
             mask_blue = ((b_ch > 140) & (g_ch < 150) & (r_ch < 100)).astype(np.uint8)
@@ -223,11 +281,36 @@ class SamPerceptionService:
             frame_idx += 1
 
         cap.release()
+
+        # Fallback for arbitrary real-world videos without blue/green calibration colors:
+        # separate static foreground anchor vs. moving foreground link via frame differencing
+        if (not part0_masks or not part1_masks) and len(raw_frames_bgr) >= 3:
+            part0_masks.clear()
+            part1_masks.clear()
+            gray_frames = [
+                cv2.GaussianBlur(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+                for f in raw_frames_bgr
+            ]
+            median_bg = np.median(np.stack(gray_frames, axis=0), axis=0).astype(np.uint8)
+
+            for idx, g_frame in enumerate(gray_frames):
+                # Moving component: high difference from temporal median
+                motion_diff = cv2.absdiff(g_frame, median_bg)
+                _, motion_mask = cv2.threshold(motion_diff, 18, 1, cv2.THRESH_BINARY)
+                # Static structure: Otsu foreground minus moving mask
+                _, otsu_fg = cv2.threshold(g_frame, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                static_mask = np.logical_and(otsu_fg > 0, motion_mask == 0).astype(np.uint8)
+
+                if int(static_mask.sum()) >= 15:
+                    part0_masks[idx] = static_mask
+                if int(motion_mask.sum()) >= 15:
+                    part1_masks[idx] = motion_mask.astype(np.uint8)
+
         label_0 = part_prompts[0] if len(part_prompts) > 0 else "static_base"
         label_1 = part_prompts[1] if len(part_prompts) > 1 else "rotating_arm"
 
         concept_masks = [(label_0, part0_masks), (label_1, part1_masks)]
-        return concept_masks, fps, frame_idx, width, height
+        return concept_masks, fps, len(raw_frames_bgr), width, height
 
     def build_kinematic_graph_from_concept_masks(
         self,
@@ -275,7 +358,7 @@ class SamPerceptionService:
                             round(pose.centroid_xy[0], 2),
                             round(pose.centroid_xy[1], 2),
                         ],
-                        "angleRad": 0.0,  # Replaced below with axially unwrapped angle
+                        "angleRad": 0.0,
                         "angleConfidence": (
                             "high" if pose.angle_rad is not None else "low_eccentricity"
                         ),
@@ -290,8 +373,6 @@ class SamPerceptionService:
             if not trajectory_frames:
                 continue
 
-            # CRITICAL FIX: Unwrap 180-degree PCA eigenvector flips across the full trajectory
-            # before storing angleRad so forward-kinematics rotation never flips by pi!
             unwrapped_seq = unwrap_axial_angles(raw_angles)
             for idx_f, clean_angle in enumerate(unwrapped_seq):
                 trajectory_frames[idx_f]["angleRad"] = round(float(clean_angle), 4)
