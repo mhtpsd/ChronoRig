@@ -253,9 +253,7 @@ class SamPerceptionService:
                     continue
 
                 pose = compute_mask_pose_pca(mask)
-                angle_val = (
-                    pose.angle_rad if pose.angle_rad is not None else last_valid_angle
-                )
+                angle_val = pose.angle_rad if pose.angle_rad is not None else last_valid_angle
                 last_valid_angle = angle_val
                 raw_angles.append(angle_val)
 
@@ -283,8 +281,7 @@ class SamPerceptionService:
                         ),
                         "bboxPx": [x0, y0, bw, bh],
                         "contourPolygonPx": [
-                            [round(px, 1), round(py, 1)]
-                            for px, py in pose.contour_polygon_px
+                            [round(px, 1), round(py, 1)] for px, py in pose.contour_polygon_px
                         ],
                     }
                 )
@@ -301,9 +298,7 @@ class SamPerceptionService:
 
             cx_series = [f["centroid2dPx"][0] for f in trajectory_frames]
             cy_series = [f["centroid2dPx"][1] for f in trajectory_frames]
-            part_motion_variance[part_uuid] = float(
-                np.var(cx_series) + np.var(cy_series)
-            )
+            part_motion_variance[part_uuid] = float(np.var(cx_series) + np.var(cy_series))
 
             mean_w = float(np.mean([b[0] for b in bboxes_wh]))
             mean_h = float(np.mean([b[1] for b in bboxes_wh]))
@@ -386,9 +381,7 @@ class SamPerceptionService:
                     child_part_id=child.part_id,
                     joint_type=j_type,
                     anchor_world_xyz=[world_x, world_y, 0.0],
-                    axis_xyz=(
-                        [0.0, 0.0, 1.0] if j_type == "revolute" else [1.0, 0.0, 0.0]
-                    ),
+                    axis_xyz=([0.0, 0.0, 1.0] if j_type == "revolute" else [1.0, 0.0, 0.0]),
                     limits={
                         "min": -1.57,
                         "max": 1.57,
