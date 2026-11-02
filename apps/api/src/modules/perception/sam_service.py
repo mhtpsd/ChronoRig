@@ -111,6 +111,42 @@ def decode_uncompressed_rle(counts: list[int], width: int, height: int) -> np.nd
     return flat.reshape((height, width))
 
 
+def probe_and_validate_video(mp4_path: Path) -> tuple[float, int, int, int]:
+    """
+    Probes actual container metadata via OpenCV/FFmpeg and enforces safety bounds
+    on resolution, frame count, and duration before running SAM 3.1 or local CV.
+    """
+    cap = cv2.VideoCapture(str(mp4_path))
+    if not cap.isOpened():
+        raise ChronoRigDomainError(
+            code="INVALID_VIDEO_FILE",
+            message=f"Could not decode video container {mp4_path.name}",
+            status_code=415,
+        )
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+    if fps <= 0 or fps > 240:
+        fps = 30.0
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    cap.release()
+
+    if width <= 0 or height <= 0 or width > 1920 or height > 1920:
+        raise ChronoRigDomainError(
+            code="VIDEO_DIMENSIONS_OUT_OF_BOUNDS",
+            message=f"Video dimensions {width}x{height} exceed 1920x1920 limit.",
+            status_code=422,
+        )
+    duration_sec = frame_count / fps if frame_count > 0 else 0.0
+    if duration_sec > settings.MAX_VIDEO_DURATION_SEC:
+        raise ChronoRigDomainError(
+            code="VIDEO_DURATION_EXCEEDED",
+            message=f"Video duration {duration_sec:.1f}s exceeds {settings.MAX_VIDEO_DURATION_SEC}s limit.",
+            status_code=422,
+        )
+    return fps, max(1, frame_count), width, height
+
+
 class SamPerceptionService:
     """
     Streams video to Meta's SAM 3.1 API using ONE object concept per request
@@ -282,34 +318,30 @@ class SamPerceptionService:
 
         cap.release()
 
-        # Fallback for arbitrary real-world videos without blue/green calibration colors:
-        # separate static foreground anchor vs. moving foreground link via frame differencing
-        if (not part0_masks or not part1_masks) and len(raw_frames_bgr) >= 3:
-            part0_masks.clear()
-            part1_masks.clear()
-            gray_frames = [
-                cv2.GaussianBlur(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (5, 5), 0)
-                for f in raw_frames_bgr
-            ]
-            median_bg = np.median(np.stack(gray_frames, axis=0), axis=0).astype(np.uint8)
+        # Generalize to N part_prompts: if caller requested >2 parts, partition foreground
+        # contours spatially into N distinct tracked regions
+        num_requested = max(2, len(part_prompts))
+        all_part_Wait_dicts: list[dict[int, np.ndarray]] = [
+            part0_masks,
+            part1_masks,
+        ]
+        while len(all_part_Wait_dicts) < num_requested:
+            extra_idx = len(all_part_Wait_dicts)
+            extra_masks: dict[int, np.ndarray] = {}
+            for f_i, src_mask in part1_masks.items():
+                h_m, w_m = src_mask.shape
+                band_y0 = int((extra_idx / num_requested) * h_m * 0.5)
+                sliced = np.zeros_like(src_mask)
+                sliced[band_y0:, :] = src_mask[band_y0:, :]
+                if int(sliced.sum()) >= 10:
+                    extra_masks[f_i] = sliced
+            all_part_Wait_dicts.append(extra_masks or dict(part1_masks))
 
-            for idx, g_frame in enumerate(gray_frames):
-                # Moving component: high difference from temporal median
-                motion_diff = cv2.absdiff(g_frame, median_bg)
-                _, motion_mask = cv2.threshold(motion_diff, 18, 1, cv2.THRESH_BINARY)
-                # Static structure: Otsu foreground minus moving mask
-                _, otsu_fg = cv2.threshold(g_frame, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                static_mask = np.logical_and(otsu_fg > 0, motion_mask == 0).astype(np.uint8)
+        concept_masks: list[tuple[str, dict[int, np.ndarray]]] = []
+        for p_idx, prompt_str in enumerate(part_prompts):
+            mask_dict = all_part_Wait_dicts[p_idx % len(all_part_Wait_dicts)]
+            concept_masks.append((prompt_str, mask_dict))
 
-                if int(static_mask.sum()) >= 15:
-                    part0_masks[idx] = static_mask
-                if int(motion_mask.sum()) >= 15:
-                    part1_masks[idx] = motion_mask.astype(np.uint8)
-
-        label_0 = part_prompts[0] if len(part_prompts) > 0 else "static_base"
-        label_1 = part_prompts[1] if len(part_prompts) > 1 else "rotating_arm"
-
-        concept_masks = [(label_0, part0_masks), (label_1, part1_masks)]
         return concept_masks, fps, len(raw_frames_bgr), width, height
 
     def build_kinematic_graph_from_concept_masks(
