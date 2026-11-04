@@ -142,7 +142,7 @@ const DEMO_FALLBACK_JOB: RigJobResponse = {
 
 export default function ChronoRigStudioPage() {
     const params = useParams<{ jobId: string }>();
-    const jobId = params?.jobId ?? DEMO_FALLBACK_JOB.id;
+    const initialJobId = params?.jobId ?? DEMO_FALLBACK_JOB.id;
 
     const job = useRigStore((s) => s.job);
     const setJob = useRigStore((s) => s.setJob);
@@ -153,8 +153,10 @@ export default function ChronoRigStudioPage() {
         }
     }, [job, setJob]);
 
+    const activeJobId = job?.id ?? initialJobId;
+
     useRigWebSocket({
-        jobId,
+        jobId: activeJobId,
         apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000",
         wsBaseUrl: process.env.NEXT_PUBLIC_WS_BASE_URL ?? "ws://localhost:8000",
     });

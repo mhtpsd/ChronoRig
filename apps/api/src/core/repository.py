@@ -63,6 +63,17 @@ class DurableJobRepository:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS ix_job_events_job_id ON durable_job_events (job_id, id);"
             )
+            # Schema migration for existing SQLite databases
+            cursor = conn.execute("PRAGMA table_info(durable_rig_jobs);")
+            existing_cols = {row["name"] for row in cursor.fetchall()}
+            if "use_live_sam" not in existing_cols:
+                conn.execute("ALTER TABLE durable_rig_jobs ADD COLUMN use_live_sam INTEGER NOT NULL DEFAULT 0;")
+            if "target_iou" not in existing_cols:
+                conn.execute("ALTER TABLE durable_rig_jobs ADD COLUMN target_iou REAL NOT NULL DEFAULT 0.85;")
+            if "max_iterations" not in existing_cols:
+                conn.execute("ALTER TABLE durable_rig_jobs ADD COLUMN max_iterations INTEGER NOT NULL DEFAULT 3;")
+            if "attempts" not in existing_cols:
+                conn.execute("ALTER TABLE durable_rig_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;")
             conn.commit()
 
     def save_job(
@@ -114,11 +125,13 @@ class DurableJobRepository:
             ).fetchone()
             if not row:
                 return None
+            payload = json.loads(row["payload_json"])
+            payload["status"] = row["status"]
             return {
                 "job_id": row["job_id"],
                 "owner_id": row["owner_id"],
                 "status": row["status"],
-                "payload": json.loads(row["payload_json"]),
+                "payload": payload,
                 "blender_script": row["blender_script"],
                 "video_path": Path(row["video_path"]) if row["video_path"] else None,
                 "use_live_sam": bool(row["use_live_sam"]),

@@ -323,6 +323,9 @@ export const PhysicsRigViewport: React.FC = () => {
             const parsed = RigJobResponseSchema.safeParse(raw);
             if (parsed.success) {
                 setJob(parsed.data);
+                if (typeof window !== "undefined") {
+                    window.history.pushState(null, "", `/studio/${parsed.data.id}`);
+                }
             }
         } catch (err) {
             console.error("Live backend reconstruction failed:", err);

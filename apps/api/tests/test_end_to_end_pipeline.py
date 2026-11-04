@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 
@@ -131,9 +132,14 @@ async def test_openapi_presign_direct_upload_and_json_job_creation_with_3_parts(
     # Process via durable worker engine
     await worker_engine.process_next_available_job()
 
-    poll_resp = client.get(f"/api/v1/jobs/{job_id}", headers=headers)
-    assert poll_resp.status_code == 200
-    completed = poll_resp.json()
+    for _ in range(40):
+        poll_resp = client.get(f"/api/v1/jobs/{job_id}", headers=headers)
+        assert poll_resp.status_code == 200
+        completed = poll_resp.json()
+        if completed.get("status") == "COMPLETED":
+            break
+        await asyncio.sleep(0.05)
+
     assert completed["status"] == "COMPLETED"
     assert len(completed["parts"]) == 3
 

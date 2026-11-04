@@ -12,6 +12,7 @@ dist/
 build/
 .turbo/
 coverage/
+*.tsbuildinfo
 
 # Environment & Secrets (NEVER COMMIT)
 .env
@@ -21,5 +22,7 @@ coverage/
 # Local Storage & OS
 *.log
 .DS_Store
+.data/
+*.sqlite3*
 minio_data/
 postgres_data/
