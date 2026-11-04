@@ -130,15 +130,12 @@ def generate_deterministic_blender_script(
 class PhysicsRigSynthesizer:
     """
     Coordinates deterministic Blender/R3F synthesis and closed-loop joint anchor
-    refinement powered by Meta's open-weight `meta-models/muse-spark-open-1026` on Baseten.
+    refinement powered by Meta's open-weight `meta-models/muse-spark-open-1026`
+    on Baseten or Modal GPU.
     """
 
     def __init__(self, parts_lookup: list[ExtractedPartTrack] | None = None) -> None:
         self._parts_by_id = {p.part_id: p for p in (parts_lookup or [])}
-        self._baseten_headers = {
-            "Authorization": f"Bearer {settings.BASETEN_API_KEY.get_secret_value()}",
-            "Content-Type": "application/json",
-        }
 
     def set_parts_context(self, parts: list[ExtractedPartTrack]) -> None:
         self._parts_by_id = {p.part_id: p for p in parts}
@@ -152,7 +149,7 @@ class PhysicsRigSynthesizer:
         """
         Refines 3D joint anchor coordinates when simulated silhouette IoU is below target.
         First computes the analytical Kasa circle-fit target anchor from the tracked parts,
-        and queries `meta-models/muse-spark-open-1026` on Baseten when configured.
+        and queries `meta-models/muse-spark-open-1026` on Baseten or Modal when configured.
         """
         diff_lines: list[str] = []
 
@@ -198,14 +195,18 @@ class PhysicsRigSynthesizer:
                 f"+ joint[{j.joint_id[:8]}].anchorWorldXyz: {j.anchor_world_xyz}"
             )
 
-        # If a live Baseten key is configured, also record reasoning from muse-spark-open-1026
-        api_key_val = settings.BASETEN_API_KEY.get_secret_value()
-        if api_key_val and not api_key_val.startswith("replace_with"):
+        # If a live Baseten or Modal key is configured, also record reasoning from muse-spark-open-1026
+        if settings.has_live_open_weight_key():
+            api_key, base_url = settings.get_open_weight_credentials()
             try:
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     resp = await client.post(
-                        f"{settings.BASETEN_BASE_URL}/chat/completions",
-                        headers=self._baseten_headers,
+                        f"{base_url}/chat/completions",
+                        headers=headers,
                         json={
                             "model": settings.MUSE_SPARK_OPEN_MODEL_ID,
                             "messages": [
@@ -234,6 +235,6 @@ class PhysicsRigSynthesizer:
                         note = resp.json()["choices"][0]["message"]["content"].strip()
                         diff_lines.append(f"// muse-spark-open-1026: {note}")
             except Exception as exc:
-                logger.warning("Baseten note call skipped: %s", exc)
+                logger.warning("Open-weight model note call skipped: %s", exc)
 
         return joints, "\n".join(diff_lines)

@@ -57,12 +57,16 @@ class Settings(BaseSettings):
     MUSE_WONDER_MODEL_ID: str = "muse-wonder-1.0"
     MUSE_VOICE_MODEL_ID: str = "muse-voice-transcribe-1.0"
 
-    # 2. Partner Open-Weight Inference (Baseten $100 + 2M TPM)
+    # 2. Partner Open-Weight Inference (Baseten $100 + 2M TPM / Modal GPU)
     BASETEN_API_KEY: SecretStr = Field(
         default=SecretStr("replace_with_baseten_api_key_min_20_chars"),
         min_length=16,
     )
     BASETEN_BASE_URL: str = "https://inference.baseten.co/v1"
+    MODAL_API_KEY: SecretStr = Field(
+        default=SecretStr(""),
+    )
+    MODAL_BASE_URL: str = ""
     MUSE_SPARK_OPEN_MODEL_ID: str = "meta-models/muse-spark-open-1026"
     MUSE_GLIMMER_MODEL_ID: str = "meta-models/muse-glimmer-30b"
 
@@ -94,7 +98,6 @@ class Settings(BaseSettings):
         if self.ENVIRONMENT == "production":
             checks = {
                 "META_MODEL_API_KEY": self.META_MODEL_API_KEY.get_secret_value(),
-                "BASETEN_API_KEY": self.BASETEN_API_KEY.get_secret_value(),
                 "JWT_SECRET_KEY": self.JWT_SECRET_KEY.get_secret_value(),
                 "S3_SECRET_ACCESS_KEY": self.S3_SECRET_ACCESS_KEY.get_secret_value(),
                 "DATABASE_ASYNC_URL": str(self.DATABASE_ASYNC_URL),
@@ -112,6 +115,19 @@ class Settings(BaseSettings):
     def has_live_meta_key(self) -> bool:
         val = self.META_MODEL_API_KEY.get_secret_value()
         return bool(val and not val.startswith("replace_with"))
+
+    def has_live_open_weight_key(self) -> bool:
+        modal_val = self.MODAL_API_KEY.get_secret_value()
+        if modal_val and not modal_val.startswith("replace_with"):
+            return True
+        baseten_val = self.BASETEN_API_KEY.get_secret_value()
+        return bool(baseten_val and not baseten_val.startswith("replace_with"))
+
+    def get_open_weight_credentials(self) -> tuple[str, str]:
+        modal_val = self.MODAL_API_KEY.get_secret_value()
+        if modal_val and not modal_val.startswith("replace_with"):
+            return modal_val, (self.MODAL_BASE_URL.rstrip("/") or "https://api.modal.com/v1")
+        return self.BASETEN_API_KEY.get_secret_value(), self.BASETEN_BASE_URL.rstrip("/")
 
 
 @lru_cache

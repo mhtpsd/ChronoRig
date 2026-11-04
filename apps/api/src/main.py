@@ -341,9 +341,11 @@ register_exception_handlers(app)
 
 
 @app.get("/healthz")
-async def healthcheck() -> dict[str, str]:
+async def healthcheck() -> dict[str, Any]:
     return {
         "status": "ok",
+        "meta_api_connected": settings.has_live_meta_key(),
+        "open_weight_api_connected": settings.has_live_open_weight_key(),
         "sam_model": settings.SAM_MODEL_ID,
         "spark_model": settings.MUSE_SPARK_MODEL_ID,
         "open_weight_model": settings.MUSE_SPARK_OPEN_MODEL_ID,
