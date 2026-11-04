@@ -345,6 +345,8 @@ async def healthcheck() -> dict[str, Any]:
     return {
         "status": "ok",
         "meta_api_connected": settings.has_live_meta_key(),
+        "baseten_api_connected": settings.has_live_baseten_key(),
+        "modal_api_connected": settings.has_live_modal_key(),
         "open_weight_api_connected": settings.has_live_open_weight_key(),
         "sam_model": settings.SAM_MODEL_ID,
         "spark_model": settings.MUSE_SPARK_MODEL_ID,

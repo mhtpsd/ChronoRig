@@ -116,17 +116,26 @@ class Settings(BaseSettings):
         val = self.META_MODEL_API_KEY.get_secret_value()
         return bool(val and not val.startswith("replace_with"))
 
-    def has_live_open_weight_key(self) -> bool:
+    def has_live_modal_key(self) -> bool:
         modal_val = self.MODAL_API_KEY.get_secret_value()
-        if modal_val and not modal_val.startswith("replace_with"):
-            return True
+        base = self.MODAL_BASE_URL.strip()
+        return bool(
+            modal_val
+            and not modal_val.startswith("replace_with")
+            and base
+            and "your-modal-app" not in base
+        )
+
+    def has_live_baseten_key(self) -> bool:
         baseten_val = self.BASETEN_API_KEY.get_secret_value()
         return bool(baseten_val and not baseten_val.startswith("replace_with"))
 
+    def has_live_open_weight_key(self) -> bool:
+        return self.has_live_modal_key() or self.has_live_baseten_key()
+
     def get_open_weight_credentials(self) -> tuple[str, str]:
-        modal_val = self.MODAL_API_KEY.get_secret_value()
-        if modal_val and not modal_val.startswith("replace_with"):
-            return modal_val, (self.MODAL_BASE_URL.rstrip("/") or "https://api.modal.com/v1")
+        if self.has_live_modal_key():
+            return self.MODAL_API_KEY.get_secret_value(), self.MODAL_BASE_URL.rstrip("/")
         return self.BASETEN_API_KEY.get_secret_value(), self.BASETEN_BASE_URL.rstrip("/")
 
 
