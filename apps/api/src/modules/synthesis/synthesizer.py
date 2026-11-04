@@ -75,7 +75,7 @@ def generate_deterministic_blender_script(
             [
                 f"# Part: {p.label} ({p.part_id})",
                 f"bpy.ops.mesh.primitive_cube_add(size=1.0, location=({x0}, 0.0, {y0}))",
-                "obj = bpy.context.active_object",
+                "obj = bpy.context.view_layer.objects.active",
                 f"obj.name = {json.dumps(p.label)}",
                 f"obj.scale = ({wx}, {wz}, {wy})",
                 f"bpy.ops.rigidbody.object_add(type='{rb_type}')",
@@ -111,7 +111,7 @@ def generate_deterministic_blender_script(
             [
                 f"# Joint: {j.joint_id} ({b_type})",
                 f"bpy.ops.object.empty_add(type='PLAIN_AXES', location=({jx}, {jz}, {jy}))",
-                "joint_empty = bpy.context.active_object",
+                "joint_empty = bpy.context.view_layer.objects.active",
                 f"joint_empty.name = 'Joint_{j.joint_type}'",
                 "bpy.ops.rigidbody.constraint_add()",
                 "rbc = joint_empty.rigid_body_constraint",

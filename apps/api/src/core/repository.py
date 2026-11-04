@@ -136,7 +136,7 @@ part_objects = {}
 
 # Part: heavy base (aaaa1111-1111-4111-8111-111111111111)
 bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 0.3429))
-obj = bpy.context.active_object
+obj = bpy.context.view_layer.objects.active
 obj.name = "heavy base"
 obj.scale = (1.4, 1.0, 0.35)
 bpy.ops.rigidbody.object_add(type='PASSIVE')
@@ -149,7 +149,7 @@ part_objects["aaaa1111-1111-4111-8111-111111111111"] = obj
 
 # Part: lower arm (bbbb2222-2222-4222-8222-222222222222)
 bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 1.1286))
-obj = bpy.context.active_object
+obj = bpy.context.view_layer.objects.active
 obj.name = "lower arm"
 obj.scale = (0.3, 0.3, 1.4)
 bpy.ops.rigidbody.object_add(type='ACTIVE')
@@ -162,7 +162,7 @@ part_objects["bbbb2222-2222-4222-8222-222222222222"] = obj
 
 # Part: upper actuator arm (cccc3333-3333-4333-8333-333333333333)
 bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.5, 0.0, 1.7714))
-obj = bpy.context.active_object
+obj = bpy.context.view_layer.objects.active
 obj.name = "upper actuator arm"
 obj.scale = (1.2, 0.28, 0.28)
 bpy.ops.rigidbody.object_add(type='ACTIVE')
@@ -175,7 +175,7 @@ part_objects["cccc3333-3333-4333-8333-333333333333"] = obj
 
 # Joint: dddd4444-4444-4444-8444-444444444444 (HINGE)
 bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0.0, 0.0, 0.55))
-joint_empty = bpy.context.active_object
+joint_empty = bpy.context.view_layer.objects.active
 joint_empty.name = 'Joint_revolute'
 bpy.ops.rigidbody.constraint_add()
 rbc = joint_empty.rigid_body_constraint
@@ -186,7 +186,7 @@ rbc.disable_collisions = True
 
 # Joint: eeee5555-5555-4555-8555-555555555555 (HINGE)
 bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0.1, 0.0, 1.65))
-joint_empty = bpy.context.active_object
+joint_empty = bpy.context.view_layer.objects.active
 joint_empty.name = 'Joint_revolute'
 bpy.ops.rigidbody.constraint_add()
 rbc = joint_empty.rigid_body_constraint
@@ -294,7 +294,7 @@ class DurableJobRepository:
                         now_iso,
                     ),
                 )
-            elif not demo_row["blender_script"] or "primitive_cube_add" not in str(demo_row["blender_script"]):
+            elif not demo_row["blender_script"] or "primitive_cube_add" not in str(demo_row["blender_script"]) or "context.active_object" in str(demo_row["blender_script"]):
                 conn.execute(
                     "UPDATE durable_rig_jobs SET blender_script = ? WHERE job_id = ?",
                     (DEFAULT_DEMO_BLENDER_SCRIPT, DEFAULT_DEMO_JOB_ID),
