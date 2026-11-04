@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     MODAL_API_KEY: SecretStr = Field(
         default=SecretStr(""),
     )
+    MODAL_TOKEN_ID: SecretStr = Field(
+        default=SecretStr(""),
+    )
+    MODAL_TOKEN_SECRET: SecretStr = Field(
+        default=SecretStr(""),
+    )
     MODAL_BASE_URL: str = ""
     MUSE_SPARK_OPEN_MODEL_ID: str = "meta-models/muse-spark-open-1026"
     MUSE_GLIMMER_MODEL_ID: str = "meta-models/muse-glimmer-30b"
@@ -117,14 +123,22 @@ class Settings(BaseSettings):
         return bool(val and not val.startswith("replace_with"))
 
     def has_live_modal_key(self) -> bool:
+        token_id = self.MODAL_TOKEN_ID.get_secret_value()
+        token_secret = self.MODAL_TOKEN_SECRET.get_secret_value()
+        if token_id.startswith("ak-") and (token_secret.startswith("as-") or len(token_secret) > 8):
+            return True
         modal_val = self.MODAL_API_KEY.get_secret_value()
-        base = self.MODAL_BASE_URL.strip()
-        return bool(
-            modal_val
-            and not modal_val.startswith("replace_with")
-            and base
-            and "your-modal-app" not in base
-        )
+        if modal_val.startswith("ak-") or (modal_val and not modal_val.startswith("replace_with")):
+            return True
+        try:
+            modal_toml = Path.home() / ".modal.toml"
+            if modal_toml.is_file():
+                txt = modal_toml.read_text(encoding="utf-8")
+                if 'token_id = "ak-' in txt or "token_id" in txt:
+                    return True
+        except Exception:
+            pass
+        return False
 
     def has_live_baseten_key(self) -> bool:
         baseten_val = self.BASETEN_API_KEY.get_secret_value()
@@ -134,8 +148,13 @@ class Settings(BaseSettings):
         return self.has_live_modal_key() or self.has_live_baseten_key()
 
     def get_open_weight_credentials(self) -> tuple[str, str]:
-        if self.has_live_modal_key():
-            return self.MODAL_API_KEY.get_secret_value(), self.MODAL_BASE_URL.rstrip("/")
+        base = self.MODAL_BASE_URL.strip()
+        modal_token = (
+            self.MODAL_TOKEN_SECRET.get_secret_value()
+            or self.MODAL_API_KEY.get_secret_value()
+        )
+        if modal_token and base and "your-modal-app" not in base:
+            return modal_token, base.rstrip("/")
         return self.BASETEN_API_KEY.get_secret_value(), self.BASETEN_BASE_URL.rstrip("/")
 
 
