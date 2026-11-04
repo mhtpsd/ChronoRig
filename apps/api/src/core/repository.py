@@ -125,6 +125,78 @@ DEFAULT_DEMO_PAYLOAD: dict[str, Any] = {
     "updatedAt": "2026-10-24T17:00:15.000Z",
 }
 
+DEFAULT_DEMO_BLENDER_SCRIPT = """import bpy
+import math
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+scene = bpy.context.scene
+scene.render.fps = 30
+bpy.ops.rigidbody.world_add()
+part_objects = {}
+
+# Part: heavy base (aaaa1111-1111-4111-8111-111111111111)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 0.3429))
+obj = bpy.context.active_object
+obj.name = "heavy base"
+obj.scale = (1.4, 1.0, 0.35)
+bpy.ops.rigidbody.object_add(type='PASSIVE')
+obj.rigid_body.mass = 5.0
+obj.location = (0.0, 0.0, 0.3429)
+obj.rotation_euler = (0.0, -0.0, 0.0)
+obj.keyframe_insert(data_path='location', frame=1)
+obj.keyframe_insert(data_path='rotation_euler', frame=1)
+part_objects["aaaa1111-1111-4111-8111-111111111111"] = obj
+
+# Part: lower arm (bbbb2222-2222-4222-8222-222222222222)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 1.1286))
+obj = bpy.context.active_object
+obj.name = "lower arm"
+obj.scale = (0.3, 0.3, 1.4)
+bpy.ops.rigidbody.object_add(type='ACTIVE')
+obj.rigid_body.mass = 1.5
+obj.location = (0.0, 0.0, 1.1286)
+obj.rotation_euler = (0.0, -0.35, 0.0)
+obj.keyframe_insert(data_path='location', frame=1)
+obj.keyframe_insert(data_path='rotation_euler', frame=1)
+part_objects["bbbb2222-2222-4222-8222-222222222222"] = obj
+
+# Part: upper actuator arm (cccc3333-3333-4333-8333-333333333333)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.5, 0.0, 1.7714))
+obj = bpy.context.active_object
+obj.name = "upper actuator arm"
+obj.scale = (1.2, 0.28, 0.28)
+bpy.ops.rigidbody.object_add(type='ACTIVE')
+obj.rigid_body.mass = 1.0
+obj.location = (0.5, 0.0, 1.7714)
+obj.rotation_euler = (0.0, 0.25, 0.0)
+obj.keyframe_insert(data_path='location', frame=1)
+obj.keyframe_insert(data_path='rotation_euler', frame=1)
+part_objects["cccc3333-3333-4333-8333-333333333333"] = obj
+
+# Joint: dddd4444-4444-4444-8444-444444444444 (HINGE)
+bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0.0, 0.0, 0.55))
+joint_empty = bpy.context.active_object
+joint_empty.name = 'Joint_revolute'
+bpy.ops.rigidbody.constraint_add()
+rbc = joint_empty.rigid_body_constraint
+rbc.type = 'HINGE'
+rbc.object1 = part_objects.get("aaaa1111-1111-4111-8111-111111111111")
+rbc.object2 = part_objects.get("bbbb2222-2222-4222-8222-222222222222")
+rbc.disable_collisions = True
+
+# Joint: eeee5555-5555-4555-8555-555555555555 (HINGE)
+bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0.1, 0.0, 1.65))
+joint_empty = bpy.context.active_object
+joint_empty.name = 'Joint_revolute'
+bpy.ops.rigidbody.constraint_add()
+rbc = joint_empty.rigid_body_constraint
+rbc.type = 'HINGE'
+rbc.object1 = part_objects.get("bbbb2222-2222-4222-8222-222222222222")
+rbc.object2 = part_objects.get("cccc3333-3333-4333-8333-333333333333")
+rbc.disable_collisions = True
+"""
+
+
 
 class DurableJobRepository:
     """
@@ -192,12 +264,13 @@ class DurableJobRepository:
             if "attempts" not in existing_cols:
                 conn.execute("ALTER TABLE durable_rig_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;")
             
-            # Seed default demo job if missing
+            # Seed default demo job if missing or incomplete
             demo_cursor = conn.execute(
-                "SELECT 1 FROM durable_rig_jobs WHERE job_id = ?",
+                "SELECT blender_script FROM durable_rig_jobs WHERE job_id = ?",
                 (DEFAULT_DEMO_JOB_ID,),
             )
-            if not demo_cursor.fetchone():
+            demo_row = demo_cursor.fetchone()
+            if not demo_row:
                 now_iso = datetime.now(UTC).isoformat()
                 conn.execute(
                     """
@@ -212,7 +285,7 @@ class DurableJobRepository:
                         "studio-default-tenant",
                         "COMPLETED",
                         json.dumps(DEFAULT_DEMO_PAYLOAD),
-                        "# ChronoRig Blender script for default demo\nimport bpy\n",
+                        DEFAULT_DEMO_BLENDER_SCRIPT,
                         "",
                         0,
                         0.85,
@@ -220,6 +293,11 @@ class DurableJobRepository:
                         0,
                         now_iso,
                     ),
+                )
+            elif not demo_row["blender_script"] or "primitive_cube_add" not in str(demo_row["blender_script"]):
+                conn.execute(
+                    "UPDATE durable_rig_jobs SET blender_script = ? WHERE job_id = ?",
+                    (DEFAULT_DEMO_BLENDER_SCRIPT, DEFAULT_DEMO_JOB_ID),
                 )
             conn.commit()
 
@@ -292,6 +370,16 @@ class DurableJobRepository:
                 "max_iterations": int(row["max_iterations"]),
                 "attempts": int(row["attempts"]),
             }
+
+    def update_blender_script(self, job_id: str, script: str) -> None:
+        """Updates the cached Blender Python script for a job."""
+        now_iso = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE durable_rig_jobs SET blender_script = ?, updated_at = ? WHERE job_id = ?",
+                (script, now_iso, job_id),
+            )
+            conn.commit()
 
     def claim_next_queued_job(self, max_attempts: int = 3) -> dict[str, Any] | None:
         """Atomically claims the oldest QUEUED job for durable worker execution."""

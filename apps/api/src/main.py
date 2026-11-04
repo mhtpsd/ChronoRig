@@ -38,6 +38,8 @@ from src.core.security import (
     verify_jwt_token,
 )
 from src.modules.perception.sam_service import (
+    ExtractedJointConstraint,
+    ExtractedPartTrack,
     SamPerceptionService,
     generate_controlled_hinge_mp4,
     probe_and_validate_video,
@@ -600,15 +602,60 @@ async def get_rig_job(
     return row["payload"]
 
 
-@app.get("/api/v1/jobs/{job_id}/blender.py", response_class=PlainTextResponse)
+@app.get("/api/v1/jobs/{job_id}/blender.py")
 async def download_blender_script(
     job_id: str,
     owner_id: str = Depends(authenticate_caller),
-) -> str:
+) -> Response:
     row = await asyncio.to_thread(_get_authorized_job_row, job_id, owner_id)
-    if not row["blender_script"]:
+    script: str | None = row.get("blender_script")
+    if not script or "primitive_cube_add" not in script:
+        payload = row.get("payload") or {}
+        parts_data = payload.get("parts") or []
+        joints_data = payload.get("joints") or []
+        if parts_data and joints_data:
+            tracks = [
+                ExtractedPartTrack(
+                    part_id=p["id"],
+                    sam_object_id=p.get("samObjectId", idx + 1),
+                    label=p.get("label", f"part_{idx}"),
+                    is_static_root=bool(p.get("isStaticRoot", False)),
+                    estimated_mass_kg=float(p.get("estimatedMassKg", 1.0)),
+                    bounding_box_extents=list(p.get("boundingBoxExtents", [0.5, 0.5, 0.5])),
+                    trajectory_frames=list(p.get("trajectoryFrames", [])),
+                    keyframes_binary_masks={},
+                )
+                for idx, p in enumerate(parts_data)
+            ]
+            constraints = [
+                ExtractedJointConstraint(
+                    joint_id=j["id"],
+                    parent_part_id=j["parentPartId"],
+                    child_part_id=j["childPartId"],
+                    joint_type=j.get("jointType", "revolute"),
+                    anchor_world_xyz=list(j.get("anchorWorldXyz", [0.0, 0.0, 0.0])),
+                    axis_xyz=list(j.get("axisXyz", [0.0, 0.0, 1.0])),
+                    limits=dict(j.get("limits", {})),
+                )
+                for j in joints_data
+            ]
+            script = generate_deterministic_blender_script(
+                tracks, constraints, float(payload.get("videoFps", 30.0))
+            )
+            await asyncio.to_thread(job_repo.update_blender_script, job_id, script)
+
+    if not script:
         raise HTTPException(status_code=404, detail=f"Blender script for job {job_id} not ready")
-    return str(row["blender_script"])
+
+    filename = f"chronorig-{job_id[:8]}.py"
+    return Response(
+        content=script,
+        media_type="text/x-python; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
 
 
 @app.get("/api/v1/jobs/{job_id}/video.mp4")
