@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import {
     Activity,
     CheckCircle2,
@@ -27,6 +27,39 @@ export const TelemetryPanel: React.FC = () => {
     const progressPct = useRigStore((s) => s.progressPct);
     const statusMessage = useRigStore((s) => s.statusMessage);
     const telemetryLogs = useRigStore((s) => s.telemetryLogs);
+    const [isExporting, setIsExporting] = useState<boolean>(false);
+
+    const handleExportBlenderScript = async (e: React.MouseEvent) => {
+        e.preventDefault();
+        if (!job?.id || isExporting) return;
+        setIsExporting(true);
+        try {
+            const apiBase =
+                process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+            const downloadUrl =
+                job.blenderScriptDownloadUrl ||
+                `${apiBase}/api/v1/jobs/${job.id}/blender.py`;
+            const res = await fetch(downloadUrl);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const scriptText = await res.text();
+            const blob = new Blob([scriptText], {
+                type: "text/x-python;charset=utf-8",
+            });
+            const blobUrl = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = blobUrl;
+            link.download = `chronorig-${job.id.slice(0, 8)}.py`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(blobUrl);
+        } catch (err) {
+            console.error("Failed to download Blender script:", err);
+            window.open(job.blenderScriptDownloadUrl ?? "#", "_blank");
+        } finally {
+            setIsExporting(false);
+        }
+    };
 
     const iterations = job?.iouIterations ?? [];
     const latestDiff =
@@ -46,10 +79,11 @@ export const TelemetryPanel: React.FC = () => {
                 </div>
 
                 <span
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono ${wsConnected
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono ${
+                        wsConnected
                             ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
                             : "bg-rose-500/15 text-rose-400 border border-rose-500/30"
-                        }`}
+                    }`}
                 >
                     {wsConnected ? (
                         <>
@@ -83,12 +117,13 @@ export const TelemetryPanel: React.FC = () => {
                         return (
                             <div
                                 key={step.key}
-                                className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[11px] font-mono border ${isCurrent
+                                className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[11px] font-mono border ${
+                                    isCurrent
                                         ? "bg-purple-500/20 border-purple-500/50 text-purple-200"
                                         : isDone
-                                            ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
-                                            : "bg-slate-900/60 border-slate-800 text-slate-400"
-                                    }`}
+                                          ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+                                          : "bg-slate-900/60 border-slate-800 text-slate-400"
+                                }`}
                             >
                                 <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                                 <span className="truncate">{step.label}</span>
@@ -139,8 +174,9 @@ export const TelemetryPanel: React.FC = () => {
                                         {heightPct}%
                                     </span>
                                     <div
-                                        className={`w-full max-w-[44px] rounded-t transition-all ${passed ? "bg-emerald-400" : "bg-purple-500"
-                                            }`}
+                                        className={`w-full max-w-[44px] rounded-t transition-all ${
+                                            passed ? "bg-emerald-400" : "bg-purple-500"
+                                        }`}
                                         style={{ height: `${heightPct}%` }}
                                     />
                                     <span className="text-[10px] font-mono text-slate-400">
@@ -185,14 +221,17 @@ export const TelemetryPanel: React.FC = () => {
 
             {/* Export Blender bpy Footer */}
             <div className="p-4 border-t border-slate-800 bg-slate-900/60">
-                <a
-                    href={job?.blenderScriptDownloadUrl ?? "#"}
-                    download={`chronorig-${job?.id ?? "scene"}.py`}
-                    className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-semibold text-xs transition"
+                <button
+                    type="button"
+                    onClick={handleExportBlenderScript}
+                    disabled={isExporting}
+                    className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 disabled:opacity-50 text-slate-950 font-semibold text-xs transition cursor-pointer"
                 >
                     <Download className="w-4 h-4" />
-                    Export Articulated Blender (bpy) Script
-                </a>
+                    {isExporting
+                        ? "Downloading Blender Script..."
+                        : "Export Articulated Blender (bpy) Script"}
+                </button>
             </div>
         </div>
     );

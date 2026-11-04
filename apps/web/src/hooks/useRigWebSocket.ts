@@ -37,6 +37,8 @@ export function useRigWebSocket({
                 const parsed = RigJobResponseSchema.safeParse(raw);
                 if (parsed.success && !isUnmounted) {
                     setJob(parsed.data);
+                } else if (!isUnmounted && raw && typeof raw === 'object') {
+                    setJob(raw as any);
                 }
             } catch (err) {
                 console.warn("Failed to fetch initial RigJob snapshot:", err);
