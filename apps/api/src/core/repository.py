@@ -128,10 +128,52 @@ DEFAULT_DEMO_PAYLOAD: dict[str, Any] = {
 DEFAULT_DEMO_BLENDER_SCRIPT = """import bpy
 import math
 
-bpy.ops.wm.read_factory_settings(use_empty=True)
+if bpy.app.background:
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+else:
+    for obj in list(bpy.data.objects):
+        if obj.type in {'MESH', 'EMPTY'}:
+            bpy.data.objects.remove(obj, do_unlink=True)
+
 scene = bpy.context.scene
 scene.render.fps = 30
-bpy.ops.rigidbody.world_add()
+scene.frame_start = 1
+scene.frame_end = 90
+scene.frame_current = 1
+
+if scene.rigidbody_world is None:
+    bpy.ops.rigidbody.world_add()
+
+if scene.rigidbody_world:
+    scene.rigidbody_world.point_cache.frame_start = 1
+    scene.rigidbody_world.point_cache.frame_end = 90
+
+def apply_rigid_body(target_obj, rb_type='ACTIVE', mass=1.0):
+    bpy.context.view_layer.objects.active = target_obj
+    target_obj.select_set(True)
+    if hasattr(bpy.context, 'temp_override'):
+        with bpy.context.temp_override(active_object=target_obj, object=target_obj, selected_objects=[target_obj], selected_editable_objects=[target_obj]):
+            bpy.ops.rigidbody.object_add(type=rb_type)
+    else:
+        bpy.ops.rigidbody.object_add(type=rb_type)
+    if target_obj.rigid_body:
+        target_obj.rigid_body.mass = mass
+
+def apply_constraint(joint_empty, constraint_type, obj1, obj2):
+    bpy.context.view_layer.objects.active = joint_empty
+    joint_empty.select_set(True)
+    if hasattr(bpy.context, 'temp_override'):
+        with bpy.context.temp_override(active_object=joint_empty, object=joint_empty, selected_objects=[joint_empty], selected_editable_objects=[joint_empty]):
+            bpy.ops.rigidbody.constraint_add()
+    else:
+        bpy.ops.rigidbody.constraint_add()
+    rbc = joint_empty.rigid_body_constraint
+    rbc.type = constraint_type
+    rbc.object1 = obj1
+    rbc.object2 = obj2
+    rbc.disable_collisions = True
+    return rbc
+
 part_objects = {}
 
 # Part: heavy base (aaaa1111-1111-4111-8111-111111111111)
@@ -139,12 +181,7 @@ bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 0.3429))
 obj = bpy.context.view_layer.objects.active
 obj.name = "heavy base"
 obj.scale = (1.4, 1.0, 0.35)
-bpy.ops.rigidbody.object_add(type='PASSIVE')
-obj.rigid_body.mass = 5.0
-obj.location = (0.0, 0.0, 0.3429)
-obj.rotation_euler = (0.0, -0.0, 0.0)
-obj.keyframe_insert(data_path='location', frame=1)
-obj.keyframe_insert(data_path='rotation_euler', frame=1)
+apply_rigid_body(obj, rb_type='PASSIVE', mass=5.0)
 part_objects["aaaa1111-1111-4111-8111-111111111111"] = obj
 
 # Part: lower arm (bbbb2222-2222-4222-8222-222222222222)
@@ -152,12 +189,8 @@ bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 1.1286))
 obj = bpy.context.view_layer.objects.active
 obj.name = "lower arm"
 obj.scale = (0.3, 0.3, 1.4)
-bpy.ops.rigidbody.object_add(type='ACTIVE')
-obj.rigid_body.mass = 1.5
-obj.location = (0.0, 0.0, 1.1286)
+apply_rigid_body(obj, rb_type='ACTIVE', mass=1.5)
 obj.rotation_euler = (0.0, -0.35, 0.0)
-obj.keyframe_insert(data_path='location', frame=1)
-obj.keyframe_insert(data_path='rotation_euler', frame=1)
 part_objects["bbbb2222-2222-4222-8222-222222222222"] = obj
 
 # Part: upper actuator arm (cccc3333-3333-4333-8333-333333333333)
@@ -165,35 +198,28 @@ bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.5, 0.0, 1.7714))
 obj = bpy.context.view_layer.objects.active
 obj.name = "upper actuator arm"
 obj.scale = (1.2, 0.28, 0.28)
-bpy.ops.rigidbody.object_add(type='ACTIVE')
-obj.rigid_body.mass = 1.0
-obj.location = (0.5, 0.0, 1.7714)
+apply_rigid_body(obj, rb_type='ACTIVE', mass=1.0)
 obj.rotation_euler = (0.0, 0.25, 0.0)
-obj.keyframe_insert(data_path='location', frame=1)
-obj.keyframe_insert(data_path='rotation_euler', frame=1)
 part_objects["cccc3333-3333-4333-8333-333333333333"] = obj
 
 # Joint: dddd4444-4444-4444-8444-444444444444 (HINGE)
 bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0.0, 0.0, 0.55))
 joint_empty = bpy.context.view_layer.objects.active
 joint_empty.name = 'Joint_revolute'
-bpy.ops.rigidbody.constraint_add()
-rbc = joint_empty.rigid_body_constraint
-rbc.type = 'HINGE'
-rbc.object1 = part_objects.get("aaaa1111-1111-4111-8111-111111111111")
-rbc.object2 = part_objects.get("bbbb2222-2222-4222-8222-222222222222")
-rbc.disable_collisions = True
+joint_empty.rotation_euler = (math.radians(90), 0.0, 0.0)
+apply_constraint(joint_empty, 'HINGE', part_objects.get("aaaa1111-1111-4111-8111-111111111111"), part_objects.get("bbbb2222-2222-4222-8222-222222222222"))
 
 # Joint: eeee5555-5555-4555-8555-555555555555 (HINGE)
 bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0.1, 0.0, 1.65))
 joint_empty = bpy.context.view_layer.objects.active
 joint_empty.name = 'Joint_revolute'
-bpy.ops.rigidbody.constraint_add()
-rbc = joint_empty.rigid_body_constraint
-rbc.type = 'HINGE'
-rbc.object1 = part_objects.get("bbbb2222-2222-4222-8222-222222222222")
-rbc.object2 = part_objects.get("cccc3333-3333-4333-8333-333333333333")
-rbc.disable_collisions = True
+joint_empty.rotation_euler = (math.radians(90), 0.0, 0.0)
+apply_constraint(joint_empty, 'HINGE', part_objects.get("bbbb2222-2222-4222-8222-222222222222"), part_objects.get("cccc3333-3333-4333-8333-333333333333"))
+
+# Pre-warm physics simulation cache across timeline so scrubbing immediately animates
+for f in range(scene.frame_start, scene.frame_end + 1):
+    scene.frame_set(f)
+scene.frame_set(scene.frame_start)
 """
 
 
@@ -294,7 +320,7 @@ class DurableJobRepository:
                         now_iso,
                     ),
                 )
-            elif not demo_row["blender_script"] or "primitive_cube_add" not in str(demo_row["blender_script"]) or "context.active_object" in str(demo_row["blender_script"]):
+            elif not demo_row["blender_script"] or "Pre-warm physics simulation cache" not in str(demo_row["blender_script"]):
                 conn.execute(
                     "UPDATE durable_rig_jobs SET blender_script = ? WHERE job_id = ?",
                     (DEFAULT_DEMO_BLENDER_SCRIPT, DEFAULT_DEMO_JOB_ID),

@@ -609,7 +609,7 @@ async def download_blender_script(
 ) -> Response:
     row = await asyncio.to_thread(_get_authorized_job_row, job_id, owner_id)
     script: str | None = row.get("blender_script")
-    if not script or "primitive_cube_add" not in script:
+    if not script or "Pre-warm simulation cache" not in script:
         payload = row.get("payload") or {}
         parts_data = payload.get("parts") or []
         joints_data = payload.get("joints") or []

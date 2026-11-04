@@ -82,7 +82,12 @@ class Settings(BaseSettings):
         min_length=32,
     )
     JWT_ALGORITHM: str = "HS256"
-    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ]
     MAX_VIDEO_DURATION_SEC: float = 15.0
     MAX_VIDEO_SIZE_BYTES: int = 50 * 1024 * 1024
 

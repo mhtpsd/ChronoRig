@@ -326,6 +326,11 @@ export const PhysicsRigViewport: React.FC = () => {
                 if (typeof window !== "undefined") {
                     window.history.pushState(null, "", `/studio/${parsed.data.id}`);
                 }
+            } else if (raw && typeof raw === "object") {
+                setJob(raw as any);
+                if (typeof window !== "undefined" && (raw as any)?.id) {
+                    window.history.pushState(null, "", `/studio/${(raw as any).id}`);
+                }
             }
         } catch (err) {
             console.error("Live backend reconstruction failed:", err);

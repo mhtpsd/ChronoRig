@@ -28,7 +28,10 @@ export const SamMaskOverlayCanvas: React.FC = () => {
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-    // Sync video time -> frame index
+    const totalFrames = Math.max(1, job?.videoFrameCount ?? 90);
+    const fps = (job?.videoFps && job.videoFps > 0) ? job.videoFps : 30;
+
+    // Synchronize HTML5 video playback -> frame index
     useEffect(() => {
         const video = videoRef.current;
         if (!video || !job) return;
@@ -36,18 +39,32 @@ export const SamMaskOverlayCanvas: React.FC = () => {
         let animFrameId: number;
         const updateFrameLoop = () => {
             if (!video.paused && !video.ended) {
-                const frameIdx = Math.min(
-                    Math.floor(video.currentTime * job.videoFps),
-                    Math.max(0, job.videoFrameCount - 1)
+                const calculatedFrame = Math.min(
+                    Math.floor(video.currentTime * fps),
+                    totalFrames - 1
                 );
-                setCurrentFrameIndex(frameIdx);
+                setCurrentFrameIndex(calculatedFrame);
             }
             animFrameId = requestAnimationFrame(updateFrameLoop);
         };
 
         animFrameId = requestAnimationFrame(updateFrameLoop);
         return () => cancelAnimationFrame(animFrameId);
-    }, [job, setCurrentFrameIndex]);
+    }, [job, fps, totalFrames, setCurrentFrameIndex]);
+
+    // Fallback animation ticker when video element is not available or blocked
+    useEffect(() => {
+        if (!isPlaying) return;
+        const video = videoRef.current;
+        if (video && !video.paused && !video.ended) return;
+
+        const intervalMs = Math.round(1000 / fps);
+        const timer = setInterval(() => {
+            setCurrentFrameIndex((useRigStore.getState().currentFrameIndex + 1) % totalFrames);
+        }, intervalMs);
+
+        return () => clearInterval(timer);
+    }, [isPlaying, fps, totalFrames, setCurrentFrameIndex]);
 
     // Draw SAM 3.1 bounding boxes, centroid trails, PCA orientation vectors & joint pivots
     useEffect(() => {
@@ -136,26 +153,40 @@ export const SamMaskOverlayCanvas: React.FC = () => {
             ctx.restore();
         });
 
-        // 2. Render Kinematic Joint Anchors (Projected from World XYZ to 2D Canvas Space)
-        if (showJointAnchors) {
+        // 2. Render Kinematic Joint Anchors (Correct Projection from World XYZ to 2D Canvas Space)
+        if (showJointAnchors && job.joints) {
             job.joints.forEach((joint) => {
-                // Map normalized world [-2..2] coordinates to 2D overlay center
-                const px = width * 0.5 + joint.anchorWorldXyz[0] * (width * 0.2);
-                const py = height * 0.5 - joint.anchorWorldXyz[1] * (height * 0.2);
+                // Exact inverse projection of world coordinates to 2D pixel coordinates:
+                // world_x = (px - (width / 2.0)) / 140.0 => px = world_x * 140.0 + (width / 2.0)
+                // world_y = ((height / 2.0) - py) / 140.0 + 1.2 => py = (height / 2.0) - (world_y - 1.2) * 140.0
+                const px = joint.anchorWorldXyz[0] * 140.0 + width * 0.5;
+                const py = height * 0.5 - (joint.anchorWorldXyz[1] - 1.2) * 140.0;
 
                 ctx.save();
                 ctx.strokeStyle = "#FEE440";
                 ctx.fillStyle = "#111827";
-                ctx.lineWidth = 2;
+                ctx.lineWidth = 2.5;
 
+                // Outer joint anchor ring
                 ctx.beginPath();
-                ctx.arc(px, py, 7, 0, Math.PI * 2);
+                ctx.arc(px, py, 7.5, 0, Math.PI * 2);
                 ctx.fill();
                 ctx.stroke();
 
+                // Inner crosshair marking the exact pivot center
+                ctx.beginPath();
+                ctx.strokeStyle = "#FEE440";
+                ctx.lineWidth = 1.5;
+                ctx.moveTo(px - 4, py);
+                ctx.lineTo(px + 4, py);
+                ctx.moveTo(px, py - 4);
+                ctx.lineTo(px, py + 4);
+                ctx.stroke();
+
+                // Joint type badge
                 ctx.fillStyle = "#FEE440";
                 ctx.font = "bold 10px ui-monospace, SFMono-Regular, monospace";
-                ctx.fillText(joint.jointType.toUpperCase(), px + 10, py + 3);
+                ctx.fillText(joint.jointType.toUpperCase(), px + 11, py + 3.5);
                 ctx.restore();
             });
         }
@@ -163,13 +194,24 @@ export const SamMaskOverlayCanvas: React.FC = () => {
 
     const handlePlayPause = () => {
         const video = videoRef.current;
-        if (!video) return;
-        if (video.paused) {
-            void video.play();
-            setIsPlaying(true);
-        } else {
+        if (!video) {
+            setIsPlaying(!isPlaying);
+            return;
+        }
+
+        if (isPlaying) {
             video.pause();
             setIsPlaying(false);
+        } else {
+            if (video.ended || (video.duration && video.currentTime >= video.duration - 0.1)) {
+                video.currentTime = 0;
+            }
+            video.play()
+                .then(() => setIsPlaying(true))
+                .catch((err) => {
+                    console.warn("Video play interrupted/blocked, running timer playback loop:", err);
+                    setIsPlaying(true);
+                });
         }
     };
 
@@ -187,10 +229,11 @@ export const SamMaskOverlayCanvas: React.FC = () => {
                     <button
                         type="button"
                         onClick={togglePcaVectors}
-                        className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-mono transition ${showPcaVectors
-                            ? "bg-teal-500/20 text-teal-300 border border-teal-500/40"
-                            : "bg-slate-800 text-slate-400"
-                            }`}
+                        className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-mono transition ${
+                            showPcaVectors
+                                ? "bg-teal-500/20 text-teal-300 border border-teal-500/40"
+                                : "bg-slate-800 text-slate-400"
+                        }`}
                     >
                         <Compass className="w-3.5 h-3.5" />
                         PCA θ
@@ -198,10 +241,11 @@ export const SamMaskOverlayCanvas: React.FC = () => {
                     <button
                         type="button"
                         onClick={toggleJointAnchors}
-                        className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-mono transition ${showJointAnchors
-                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                            : "bg-slate-800 text-slate-400"
-                            }`}
+                        className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-mono transition ${
+                            showJointAnchors
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                : "bg-slate-800 text-slate-400"
+                        }`}
                     >
                         <Crosshair className="w-3.5 h-3.5" />
                         Pivots
@@ -219,6 +263,9 @@ export const SamMaskOverlayCanvas: React.FC = () => {
                         loop
                         muted
                         playsInline
+                        onPlay={() => setIsPlaying(true)}
+                        onPause={() => setIsPlaying(false)}
+                        onEnded={() => setIsPlaying(false)}
                     />
                 ) : (
                     <div className="text-xs font-mono text-slate-500">
@@ -238,7 +285,7 @@ export const SamMaskOverlayCanvas: React.FC = () => {
                 <button
                     type="button"
                     onClick={handlePlayPause}
-                    className="p-1.5 rounded bg-teal-500 hover:bg-teal-400 text-slate-950 transition"
+                    className="p-1.5 rounded bg-teal-500 hover:bg-teal-400 text-slate-950 transition cursor-pointer"
                     aria-label={isPlaying ? "Pause video" : "Play video"}
                 >
                     {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
@@ -247,20 +294,20 @@ export const SamMaskOverlayCanvas: React.FC = () => {
                 <input
                     type="range"
                     min={0}
-                    max={Math.max(1, (job?.videoFrameCount ?? 60) - 1)}
+                    max={totalFrames - 1}
                     value={currentFrameIndex}
                     onChange={(e) => {
                         const frame = Number(e.target.value);
                         setCurrentFrameIndex(frame);
-                        if (videoRef.current && job) {
-                            videoRef.current.currentTime = frame / job.videoFps;
+                        if (videoRef.current && Number.isFinite(videoRef.current.duration)) {
+                            videoRef.current.currentTime = frame / fps;
                         }
                     }}
                     className="flex-1 accent-teal-400 cursor-pointer"
                 />
 
                 <span className="text-xs font-mono text-slate-400 min-w-[92px] text-right">
-                    Frame {currentFrameIndex} / {job?.videoFrameCount ?? 0}
+                    Frame {currentFrameIndex + 1} / {totalFrames}
                 </span>
             </div>
         </div>

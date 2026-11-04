@@ -11,10 +11,15 @@ from starlette.websockets import WebSocketDisconnect
 from src.core.security import create_jwt_token
 from src.main import app, worker_engine
 from src.modules.perception.sam_service import (
+    ExtractedJointConstraint,
+    ExtractedPartTrack,
     SamPerceptionService,
     generate_controlled_hinge_mp4,
 )
-from src.modules.synthesis.synthesizer import validate_blender_script_ast
+from src.modules.synthesis.synthesizer import (
+    generate_deterministic_blender_script,
+    validate_blender_script_ast,
+)
 
 
 def test_jwt_authenticated_demo_hinge_and_cross_tenant_isolation() -> None:
@@ -154,3 +159,29 @@ def test_native_sam_rle_stream_decoder_and_ast_guard() -> None:
 
     with pytest.raises(ValueError, match="Forbidden import 'subprocess'"):
         validate_blender_script_ast("import bpy\nimport subprocess\n")
+
+    # Verify generated script contains context-safe helpers and valid AST
+    p = ExtractedPartTrack(
+        part_id="p1",
+        sam_object_id=1,
+        label="base",
+        is_static_root=True,
+        estimated_mass_kg=5.0,
+        bounding_box_extents=[1.0, 1.0, 0.5],
+        trajectory_frames=[],
+        keyframes_binary_masks={},
+    )
+    j = ExtractedJointConstraint(
+        joint_id="j1",
+        parent_part_id="p1",
+        child_part_id="p1",
+        joint_type="revolute",
+        anchor_world_xyz=[0.0, 0.0, 0.0],
+        axis_xyz=[0.0, 0.0, 1.0],
+        limits={},
+    )
+    gen_script = generate_deterministic_blender_script([p], [j])
+    assert "apply_rigid_body" in gen_script
+    assert "apply_constraint" in gen_script
+    assert "temp_override" in gen_script
+    assert validate_blender_script_ast(gen_script) == gen_script
